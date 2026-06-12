@@ -1,0 +1,22 @@
+# Python dependencies for the PipetteLiquidHandler integrated cell.
+#
+# Install once per Python env (conda env or venv) after activating it:
+#   pip install -r requirements.txt
+#
+# Then run the combined controller:
+#   python3 pipette_liquid_handler.py
+#
+# The controller bundles three device drivers from sibling projects,
+# imported via sys.path (no packaging step). Their third-party needs:
+
+# Pipette (Picus 2, USB-CDC) and balance (Entris-II, SBI serial).
+# Both enumerate as serial ports. -- AutomatedPipette, PrecisionScale.
+pyserial>=3.5
+
+# XZ stage: MKS SERVO57D over per-motor USB2CAN (FTDI) adapters, driven
+# with libusb via pyftdi. pyftdi pulls in pyusb. -- ESP32S3BOX3MotorController.
+pyftdi>=0.55
+
+# Pipette BLE transport (optional; only when pipette_ble_name is set).
+# USB-CDC control needs only pyserial above. -- AutomatedPipette.
+bleak>=0.22
