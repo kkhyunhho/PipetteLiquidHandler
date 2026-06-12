@@ -65,19 +65,30 @@ python pipette_liquid_handler.py
 
 ## Configuration
 
-Edit the top of [`pipette_liquid_handler.py`](pipette_liquid_handler.py):
+Edit the **OPERATOR CONFIGURATION** block at the top of
+[`pipette_liquid_handler.py`](pipette_liquid_handler.py):
 
-- `_sample_layout` (`CellLayout`) — station coordinates as `Point(x_mm,
-  z_mm)` absolute from home, plus `tip_interval_mm` and `tip_seat_z_mm`.
-  **Currently placeholder** (Z uniformly 100); set real measured values
-  before relying on the dispense results.
-- `default_x_serial` — FTDI serial of the X-axis adapter.
-- `default_move_speed_pct` / `default_pipette_speed` — motion and
-  pipetting speeds.
+- Station coordinates `*_mm = (X_mm, Z_mm)` — absolute from the homed
+  origin. X is the column; Z is the descend depth for the action there.
+- `travel_z_mm` — safe clearance height for X traversal (Z raised).
+- `tip_interval_mm` — X spacing between tips; `tip_seat_z_mm` — extra Z
+  press past the approach to seat a tip.
+- `x_axis_serial`, `move_speed_pct`, `tip_seat_speed_pct` (slow tip
+  seating), `pipette_speed`, `weigh_sample_count`.
+
+## Weigh log (CSV)
+
+Each target weight is the **median of `weigh_sample_count` (5) stable
+reads** — robust against an outlier. Every sample and the final median
+are written to a CSV (`csv_path` constructor arg, else a timestamped
+`weigh_<...>.csv`): columns `timestamp, tag, target, volume_ul, kind,
+index, value, unit`.
 
 ## Layout / debug scripts
 
 - [`claude_test/bringup_comms.py`](claude_test/bringup_comms.py) —
   real-hardware comms check, no motion.
+- [`claude_test/run_z_minus20.py`](claude_test/run_z_minus20.py) —
+  full run with every Z shifted by -20 mm (derived from the real layout).
 - [`claude_test/dryrun_workflow.py`](claude_test/dryrun_workflow.py) —
   mocked dry-run that verifies the full call ordering.

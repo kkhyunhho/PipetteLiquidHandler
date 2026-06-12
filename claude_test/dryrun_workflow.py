@@ -41,7 +41,7 @@ class FakeMotor:
         return True
 
     def move_to(self, mm, speed_pct=20, accel_pct=10):
-        log(f"CM.move_X -> {mm}")
+        log(f"CM.move_X -> {mm} @ {speed_pct}% acc={accel_pct}")
 
     def close(self):
         log(f"CM.close({self.name})")
@@ -59,7 +59,8 @@ class FakeMKSMotor:
 
     @staticmethod
     def move_sync(motors, moves):
-        log(f"CM.move_Z -> {moves[0][0]}")
+        z, speed, accel = moves[0]
+        log(f"CM.move_Z -> {z} @ {speed}% acc={accel}")
 
 
 fake_mks.MKSMotor = FakeMKSMotor
@@ -148,6 +149,9 @@ class FakeScale:
     def get_model_number(self):
         return "FAKE-ENTRIS-II"
 
+    def flush_pending_reads(self):
+        log("PS.flush_pending_reads()")
+
     def read_stable_weight(self, timeout=30.0):
         self._pan_mass[0] += 0.1234
         value = round(self._pan_mass[0], 4)
@@ -185,7 +189,15 @@ layout = CellLayout(
 
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    async with PipetteLiquidHandler(layout) as cell:
+    # Explicit fake ports so the mocked run never touches real hardware
+    # (the module's VID:PID auto-detect would otherwise scan real ports).
+    csv_path = "/tmp/dryrun_weigh.csv"
+    async with PipetteLiquidHandler(
+        layout,
+        pipette_port="/dev/fake-pipette",
+        scale_port="/dev/fake-balance",
+        csv_path=csv_path,
+    ) as cell:
         model = await cell.get_balance_model()
         log(f"PS.get_model_number() -> {model}")
         results = await cell.run()
@@ -210,38 +222,86 @@ async def main():
     if ok:
         print("PASS: every X move is followed by a Z move (X then Z)")
 
-    # 2. Each weighing is immediately preceded by a retract to travel Z,
-    #    i.e. the tip is raised clear before the gravimetric read.
-    weighs = [i for i, m in enumerate(TRACE)
-              if m.startswith("PS.read_stable_weight")]
-    if weighs and all(
-        TRACE[i - 1] == f"CM.move_Z -> {TRAVEL_Z}" for i in weighs
-    ):
-        print("PASS: every weighing follows a retract to travel Z "
-              "(tip clear)")
+    retract = f"CM.move_Z -> {TRAVEL_Z} @"  # prefix of a retract move
+
+    # 2. Each measurement starts with a flush that is immediately
+    #    preceded by a retract to travel Z (tip raised clear first).
+    flushes = [i for i, m in enumerate(TRACE)
+               if m == "PS.flush_pending_reads()"]
+    if flushes and all(TRACE[i - 1].startswith(retract) for i in flushes):
+        print("PASS: every measurement retracts (tip clear) then flushes")
     else:
-        print(f"FAIL: a weighing is not preceded by retract (idx={weighs})")
+        print(f"FAIL: a measurement not preceded by retract ({flushes})")
         ok = False
 
-    # 3. blow-out count == 2 (one per pass), each before retract+weigh.
+    # 3. blow-out count == 2 (one per pass), each before retract+flush.
     blow = [i for i, m in enumerate(TRACE) if m.startswith("AP.blow_out")]
     if len(blow) == 2 and all(
-        TRACE[i + 1] == f"CM.move_Z -> {TRAVEL_Z}"
-        and TRACE[i + 2].startswith("PS.read_stable_weight")
+        TRACE[i + 1].startswith(retract)
+        and TRACE[i + 2] == "PS.flush_pending_reads()"
         for i in blow
     ):
-        print("PASS: 2 blow-outs, each before its retract + weighing")
+        print("PASS: 2 blow-outs, each before its retract + measurement")
     else:
         print(f"FAIL: blow-out placement wrong (indices={blow})")
         ok = False
 
-    # 4. Info: tip seats and aspirations and results.
-    print(f"INFO: aspirations = "
-          f"{[m for m in TRACE if m.startswith('AP.aspirate')]}")
+    # 4. Slow tip-seating: every "@ 3%" move is the final seat press Z
+    #    move only (the approach descent runs at normal speed), 1 per
+    #    reload x 2 reloads = 2 (setup + blue pass; the final brown pass
+    #    does not reload), and no X traverse runs slow.
+    slow = [m for m in TRACE if "@ 3%" in m]
+    if (len(slow) == 2
+            and all(m.startswith("CM.move_Z") for m in slow)
+            and not any(m.startswith("CM.move_X") and "@ 3%" in m
+                        for m in TRACE)):
+        print("PASS: only the seat press is slow (2 slow Z moves, no "
+              "slow X/approach)")
+    else:
+        print(f"FAIL: slow-speed moves unexpected ({slow})")
+        ok = False
+
+    # 4b. Every stage move carries the configured 10% accel ramp.
+    moves = [m for m in TRACE if m.startswith("CM.move_")]
+    if moves and all("acc=10" in m for m in moves):
+        print(f"PASS: all {len(moves)} moves use accel 10%")
+    else:
+        bad = [m for m in moves if "acc=10" not in m]
+        print(f"FAIL: moves without acc=10: {bad}")
+        ok = False
+
+    # 5. Each result is the median of exactly 5 collected samples.
+    import statistics
+    flat = [it for items in results.values() for it in items]
+    if flat and all(
+        len(it.samples) == 5
+        and it.reading.value
+        == statistics.median(s.value for s in it.samples)
+        for it in flat
+    ):
+        print("PASS: each result is the median of 5 samples")
+    else:
+        print("FAIL: median / sample-count mismatch")
+        ok = False
+
+    # 6. CSV written: header + (5 samples + 1 final) x 4 measurements.
+    import csv as _csv
+    with open(csv_path) as f:
+        rows = list(_csv.reader(f))
+    expected = 1 + 4 * (5 + 1)
+    finals = [r for r in rows[1:] if r[4] == "final"]
+    if len(rows) == expected and rows[0][0] == "timestamp" and len(finals) == 4:
+        print(f"PASS: CSV has {len(rows)} rows, {len(finals)} final values")
+    else:
+        print(f"FAIL: CSV rows={len(rows)} (expected {expected})")
+        ok = False
+
+    # Info.
     for liquid, items in results.items():
         for it in items:
             print(f"INFO: {liquid} {it.label} {it.volume_ul}uL -> "
-                  f"{it.reading.value} {it.reading.unit}")
+                  f"median {it.reading.value} {it.reading.unit} "
+                  f"(n={len(it.samples)})")
 
     print("\nRESULT:", "ALL PASS" if ok else "FAILURES ABOVE")
 

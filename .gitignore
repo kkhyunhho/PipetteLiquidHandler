@@ -25,6 +25,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# ===== Run outputs =====
+weigh_*.csv
+
 # ===== Secrets =====
 .env
 .env.local

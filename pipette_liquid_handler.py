@@ -60,11 +60,14 @@ Hardware preconditions (see the source projects' CLAUDE.md files):
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import os
+import statistics
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from types import TracebackType
 from typing import NamedTuple, Self
 
@@ -121,21 +124,23 @@ entris_pid = 0x0010
 
 travel_z_mm = 0  # safe clearance height for X traversal
 
-trash_bin_mm = (50, 100)  # T.B. — used-tip drop
-tip_storage_mm = (100, 100)  # T.S. — first tip (slot 0) approach
-source_blue_mm = (150, 100)  # B1 — blue liquid
-source_brown_mm = (200, 100)  # B2 — brown liquid
-target_1_mm = (250, 100)  # B31 — first target (on the balance pan)
-target_2_mm = (300, 100)  # B32 — second target (on the balance pan)
+trash_bin_mm = (0, 175)  # T.B. — used-tip drop
+tip_storage_mm = (55, 255)  # T.S. — first tip (slot 0) approach
+source_blue_mm = (180, 65)  # B1 — blue liquid
+source_brown_mm = (325, 65)  # B2 — brown liquid
+target_1_mm = (235, 30)  # B31 — first target (on the balance pan)
+target_2_mm = (275, 30)  # B32 — second target (on the balance pan)
 
-tip_interval_mm = 9  # X spacing between adjacent tips in the rack
-tip_seat_z_mm = 100  # Z press depth to seat a tip (below approach)
+tip_interval_mm = 9.5  # X spacing between adjacent tips in the rack
+tip_seat_z_mm = 10  # extra Z press past the approach depth to seat a tip
 
 # Stage / pipette motion knobs (rarely edited).
 x_axis_serial = "NTAM63XD"  # FTDI chip serial of the X-axis adapter
 move_speed_pct = 10  # stage absolute-move speed, % of max RPM
-move_accel_pct = 0  # stage absolute-move accel, % of max
+move_accel_pct = 10  # accel ramp on every move (0 = abrupt), % of max
+tip_seat_speed_pct = 3  # slow Z speed while seating a tip, % of max RPM
 pipette_speed = 6  # default pipette motor speed, 1..9
+weigh_sample_count = 5  # stable reads per weighing; final value = median
 home_dir_z = 0x00  # Z homing direction byte
 home_dir_x = 0x01  # X homing direction byte
 # ══════════════════════════════════════════════════════════════════════
@@ -193,8 +198,9 @@ class CellLayout:
             descend/approach height onto the rack.
         tip_interval_mm: Center-to-center spacing between adjacent tips
             in the rack, applied along X.
-        tip_seat_z_mm: Z depth the nozzle presses to seat a new tip
-            (below ``tip_storage.z_mm``).
+        tip_seat_z_mm: Extra Z press past ``tip_storage.z_mm`` to seat a
+            new tip; the seat target is ``tip_storage.z_mm`` +
+            ``tip_seat_z_mm``.
         source_blue: B1 — vial of blue liquid.
         source_brown: B2 — vial of brown liquid.
         target_1: B31 — first target vial, sitting on the balance pan.
@@ -218,13 +224,15 @@ class DispenseResult(NamedTuple):
     Attributes:
         label: Target identifier (e.g. ``"B31"``).
         volume_ul: Nominal dispensed volume in microliters.
-        reading: Stable balance reading taken after the dispense, with
-            the tip raised clear of the vial.
+        reading: Final balance reading — the median of ``samples`` —
+            taken after the dispense with the tip raised clear.
+        samples: The individual stable reads the median was taken from.
     """
 
     label: str
     volume_ul: int
     reading: WeightReading
+    samples: list[WeightReading]
 
 
 class PipetteLiquidHandler:
@@ -256,7 +264,10 @@ class PipetteLiquidHandler:
         home_dir_x: int = home_dir_x,
         move_speed_pct: int = move_speed_pct,
         move_accel_pct: int = move_accel_pct,
+        tip_seat_speed_pct: int = tip_seat_speed_pct,
         pipette_speed: int = pipette_speed,
+        weigh_sample_count: int = weigh_sample_count,
+        csv_path: str | None = None,
     ) -> None:
         """Record the layout and connection settings without opening any
         device.
@@ -275,7 +286,13 @@ class PipetteLiquidHandler:
             home_dir_x: Homing direction byte for the X axis.
             move_speed_pct: Absolute-move speed, percent of max RPM.
             move_accel_pct: Absolute-move acceleration, percent of max.
+            tip_seat_speed_pct: Slow Z speed used while seating a tip,
+                percent of max RPM.
             pipette_speed: Default pipette motor speed (1..9).
+            weigh_sample_count: Stable reads collected per weighing; the
+                reported value is their median.
+            csv_path: Where to write the weigh log, or None to create a
+                timestamped ``weigh_<...>.csv`` on the first weighing.
         """
         self._layout = layout
         self._pipette_port = pipette_port
@@ -286,7 +303,15 @@ class PipetteLiquidHandler:
         self._home_dir_x = home_dir_x
         self._move_speed_pct = move_speed_pct
         self._move_accel_pct = move_accel_pct
+        self._tip_seat_speed_pct = tip_seat_speed_pct
         self._pipette_speed = pipette_speed
+        self._weigh_sample_count = weigh_sample_count
+
+        # Weigh-log CSV. Opened lazily on the first weighing so a run
+        # that never weighs leaves no file behind.
+        self._csv_path = csv_path
+        self._csv_file = None
+        self._csv_writer = None
 
         self._pipette: Picus2Client | None = None
         self._scale: PrecisionScaleController | None = None
@@ -393,6 +418,14 @@ class PipetteLiquidHandler:
                 logger.warning("motor close failed: %s", error)
         self._z_motors = []
         self._x_motor = None
+
+        if self._csv_file is not None:
+            try:
+                self._csv_file.close()
+            except Exception as error:
+                logger.warning("csv close failed: %s", error)
+            self._csv_file = None
+            self._csv_writer = None
         logger.info("PipetteLiquidHandler closed")
 
     # ── Per-instrument bring-up (blocking; run via to_thread) ─────────
@@ -487,26 +520,40 @@ class PipetteLiquidHandler:
                 self._home_dir_x,
             )
 
-    async def move_z(self, z_mm: int) -> None:
-        """Move only the paired Z axis to ``z_mm`` (X held in place)."""
-        await asyncio.to_thread(self._move_z_blocking, z_mm)
+    async def move_z(self, z_mm: int, speed_pct: int | None = None) -> None:
+        """Move only the paired Z axis to ``z_mm`` (X held in place).
 
-    async def move_x(self, x_mm: int) -> None:
-        """Move only the X axis to ``x_mm`` (Z held in place)."""
-        await asyncio.to_thread(self._move_x_blocking, x_mm)
+        Args:
+            z_mm: Absolute Z target in millimeters.
+            speed_pct: Override the default move speed (percent of max
+                RPM); used for the slow tip-seating descent.
+        """
+        await asyncio.to_thread(self._move_z_blocking, z_mm, speed_pct)
 
-    def _move_z_blocking(self, z_mm: int) -> None:
+    async def move_x(self, x_mm: int, speed_pct: int | None = None) -> None:
+        """Move only the X axis to ``x_mm`` (Z held in place).
+
+        Args:
+            x_mm: Absolute X target in millimeters.
+            speed_pct: Override the default move speed (percent of max
+                RPM).
+        """
+        await asyncio.to_thread(self._move_x_blocking, x_mm, speed_pct)
+
+    def _move_z_blocking(self, z_mm: int, speed_pct: int | None = None) -> None:
+        speed = self._move_speed_pct if speed_pct is None else speed_pct
         with self._motor_lock:
             MKSMotor.move_sync(
                 self._z_motors,
-                [(z_mm, self._move_speed_pct, self._move_accel_pct)],
+                [(z_mm, speed, self._move_accel_pct)],
             )
 
-    def _move_x_blocking(self, x_mm: int) -> None:
+    def _move_x_blocking(self, x_mm: int, speed_pct: int | None = None) -> None:
+        speed = self._move_speed_pct if speed_pct is None else speed_pct
         with self._motor_lock:
             self._require_x_motor().move_to(
                 x_mm,
-                speed_pct=self._move_speed_pct,
+                speed_pct=speed,
                 accel_pct=self._move_accel_pct,
             )
 
@@ -568,6 +615,102 @@ class PipetteLiquidHandler:
         """
         return await asyncio.to_thread(self._require_scale().read_stable_weight)
 
+    async def measure_weight(
+        self, count: int | None = None
+    ) -> tuple[WeightReading, list[WeightReading]]:
+        """Collect several stable reads and reduce them to their median.
+
+        Flushes stale buffered lines, then reads ``count`` consecutive
+        stable weights — the BCE224I keeps pushing near-duplicates at the
+        0.001 g level under AUTO W/, so repeated reads sample the settled
+        value — and takes the median, which rejects an occasional
+        outlier reading. The individual samples are returned too, for the
+        weigh log.
+
+        Args:
+            count: Samples to collect; defaults to ``weigh_sample_count``.
+
+        Returns:
+            ``(final, samples)`` where ``final`` is a :class:`WeightReading`
+            at the median value and ``samples`` are the raw reads.
+
+        Raises:
+            TimeoutError: If a stable reading does not arrive in time.
+        """
+        n = count or self._weigh_sample_count
+        samples = await asyncio.to_thread(self._collect_samples_blocking, n)
+        value = statistics.median(s.value for s in samples)
+        unit = samples[0].unit if samples else ""
+        return WeightReading(value, unit, f"median of {n}"), samples
+
+    def _collect_samples_blocking(self, count: int) -> list[WeightReading]:
+        scale = self._require_scale()
+        # Drop stale pre-dispense lines so every sample is post-settle.
+        scale.flush_pending_reads()
+        return [scale.read_stable_weight() for _ in range(count)]
+
+    def _ensure_csv(self) -> None:
+        """Open the weigh-log CSV and write its header on first use."""
+        if self._csv_writer is not None:
+            return
+        path = self._csv_path or datetime.now().strftime(
+            "weigh_%Y%m%d_%H%M%S.csv"
+        )
+        self._csv_path = path
+        self._csv_file = open(path, "w", newline="", encoding="utf-8")
+        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer.writerow(
+            [
+                "timestamp",
+                "tag",
+                "target",
+                "volume_ul",
+                "kind",
+                "index",
+                "value",
+                "unit",
+            ]
+        )
+        logger.info("weigh log: %s", path)
+
+    def _log_weigh(
+        self,
+        tag: str,
+        label: str,
+        volume_ul: int,
+        samples: list[WeightReading],
+        final: WeightReading,
+    ) -> None:
+        """Append one measurement's samples and median to the CSV."""
+        self._ensure_csv()
+        stamp = datetime.now().isoformat(timespec="seconds")
+        for index, sample in enumerate(samples):
+            self._csv_writer.writerow(
+                [
+                    stamp,
+                    tag,
+                    label,
+                    volume_ul,
+                    "sample",
+                    index,
+                    f"{sample.value:.4f}",
+                    sample.unit,
+                ]
+            )
+        self._csv_writer.writerow(
+            [
+                stamp,
+                tag,
+                label,
+                volume_ul,
+                "final",
+                "",
+                f"{final.value:.4f}",
+                final.unit,
+            ]
+        )
+        self._csv_file.flush()
+
     async def calibrate_balance(self) -> WeightReading:
         """Run the balance internal calibration (pan must be empty)."""
         return await asyncio.to_thread(
@@ -582,6 +725,7 @@ class PipetteLiquidHandler:
 
     async def throw_tip(self) -> None:
         """Traverse to the trash bin, eject the used tip, then retract."""
+        logger.info("[tip] discard used tip at trash bin")
         await self.traverse_to(self._layout.trash_bin)
         await self.eject_tip()
         await self.retract()
@@ -589,21 +733,26 @@ class PipetteLiquidHandler:
     async def reload_tip(self) -> None:
         """Seat the next fresh tip from the rack.
 
-        Traverses to tip slot ``self._tip_index`` and descends to the
-        rack approach height (X then Z), presses the nozzle down to
-        ``tip_seat_z_mm`` to seat the tip, then retracts to the travel
-        height with the tip attached. Advances the tip index.
+        Traverses in X to tip slot ``self._tip_index`` and descends to
+        the rack approach height at the usual speed, then presses the
+        extra ``tip_seat_z_mm`` deeper at the slow ``tip_seat_speed_pct``
+        — only this final seating press is slowed, so the nozzle eases
+        the tip on gently. Finally retracts to the travel height with the
+        tip attached and advances the tip index.
         """
         slot = self._tip_index
+        logger.info("[tip] load new tip #%d (slow seat press)", slot)
         tip = Point(
             x_mm=self._layout.tip_storage.x_mm
             + slot * self._layout.tip_interval_mm,
             z_mm=self._layout.tip_storage.z_mm,
         )
-        await self.traverse_to(tip)
-        # The press-on is the tip-load action; retract then lifts the
-        # seated tip back to the travel height.
-        await self.move_z(self._layout.tip_seat_z_mm)
+        # Traverse and descend to the approach height at the usual speed;
+        # only the final seat press (the tip_seat_z_mm extra) is slowed.
+        await self.move_x(tip.x_mm)
+        await self.move_z(tip.z_mm)
+        seat_z = tip.z_mm + self._layout.tip_seat_z_mm
+        await self.move_z(seat_z, speed_pct=self._tip_seat_speed_pct)
         await self.retract()
         self._tip_index += 1
         logger.info("seated tip #%d", slot)
@@ -622,6 +771,7 @@ class PipetteLiquidHandler:
                 is on the mode-selection menu rather than a Pipetting
                 mode).
         """
+        logger.info("[setup] trash bin -> enable motor -> load first tip")
         await self.traverse_to(self._layout.trash_bin)
         # Authorizing motor control ejects any mounted tip as a reset;
         # doing it over the bin keeps that tip out of the workspace.
@@ -646,18 +796,21 @@ class PipetteLiquidHandler:
         volume_ul: int,
         label: str,
         *,
+        tag: str = "",
         blow_out: bool = False,
     ) -> DispenseResult:
         """Traverse to a target, dispense, retract, then weigh.
 
-        The weight is read **after** the tip retracts clear of the vial,
-        so contact with the vial or liquid cannot corrupt the gravimetric
-        reading.
+        The weight is taken **after** the tip retracts clear of the vial
+        (so contact cannot corrupt the reading) as the median of
+        ``weigh_sample_count`` stable reads; the samples and the median
+        are appended to the weigh-log CSV.
 
         Args:
             target: Target vial position (on the P.S. pan).
             volume_ul: Volume to dispense, in microliters.
             label: Identifier recorded in the result (e.g. ``"B31"``).
+            tag: Pass label for the CSV (e.g. ``"blue"``).
             blow_out: Blow out residual after the dispense, before
                 retracting, so the expelled remainder lands on the pan
                 and is captured in the reading. Set only on the final
@@ -665,45 +818,67 @@ class PipetteLiquidHandler:
                 liquid still owed to later targets.
 
         Returns:
-            The dispense volume paired with the stable weight read once
-            the tip is clear.
+            The dispense volume paired with the median reading and its
+            samples.
         """
+        logger.info(
+            "[%s] %s: move over target, dispense %d uL", tag, label, volume_ul
+        )
         await self.traverse_to(target)
         await self.dispense(volume_ul)
         if blow_out:
             # Still over the target; expel the clinging remainder so it
             # is weighed, before retracting clear for the reading.
+            logger.info("[%s] %s: blow out residual", tag, label)
             await self.blow_out()
         await self.retract()
-        reading = await self.read_weight()
         logger.info(
-            "%s: dispensed %d uL, balance reads %.4f %s",
+            "[%s] %s: tip clear, weighing (median of %d)",
+            tag,
+            label,
+            self._weigh_sample_count,
+        )
+        final, samples = await self.measure_weight()
+        self._log_weigh(tag, label, volume_ul, samples, final)
+        logger.info(
+            "%s/%s: dispensed %d uL, median %.4f %s (n=%d)",
+            tag,
             label,
             volume_ul,
-            reading.value,
-            reading.unit,
+            final.value,
+            final.unit,
+            len(samples),
         )
-        return DispenseResult(label, volume_ul, reading)
+        return DispenseResult(label, volume_ul, final, samples)
 
     async def transfer_pass(
         self,
         source: Point,
         plan: list[tuple[Point, int, str]],
+        tag: str = "",
+        reload_after: bool = True,
     ) -> list[DispenseResult]:
         """Run one closed-loop pass: aspirate, dispense+weigh, swap tip.
 
         Traverses to ``source`` and aspirates the summed plan volume,
         retracts, dispenses each planned aliquot into its target while
-        weighing, then throws the used tip and seats a fresh one.
+        weighing, then discards the used tip and (optionally) seats a
+        fresh one.
 
         Args:
             source: Source vial to aspirate from.
             plan: Ordered ``(target, volume_ul, label)`` aliquots.
+            tag: Pass label recorded in the weigh log (e.g. ``"blue"``).
+            reload_after: Seat a fresh tip after discarding the used one.
+                Set False on the final pass — nothing follows it, so the
+                run ends with the tip simply discarded.
 
         Returns:
             One :class:`DispenseResult` per planned aliquot.
         """
+        logger.info("=== pass: %s ===", tag or "(untagged)")
         total_ul = sum(volume for _, volume, _ in plan)
+        logger.info("[%s] aspirate %d uL from source", tag, total_ul)
         await self.traverse_to(source)
         await self.aspirate(total_ul)
         await self.retract()
@@ -715,12 +890,17 @@ class PipetteLiquidHandler:
             # expel liquid still owed to the remaining targets.
             results.append(
                 await self.dispense_and_weigh(
-                    target, volume, label, blow_out=(index == last)
+                    target,
+                    volume,
+                    label,
+                    tag=tag,
+                    blow_out=(index == last),
                 )
             )
 
         await self.throw_tip()
-        await self.reload_tip()
+        if reload_after:
+            await self.reload_tip()
         return results
 
     async def end(self) -> None:
@@ -735,7 +915,9 @@ class PipetteLiquidHandler:
         B32), then the brown pass (B2 -> 200 uL into B31, 100 uL into
         B32), then Ending. Each pass aspirates 300 uL once, weighs after
         every dispense (tip retracted), and blows out residual on the
-        final dispense before its weighing.
+        final dispense before its weighing. The blue pass swaps in a
+        fresh tip at its end; the brown (final) pass just discards its
+        tip — no reload.
 
         Returns:
             ``{"blue": [...], "brown": [...]}`` dispense/weigh results.
@@ -749,6 +931,7 @@ class PipetteLiquidHandler:
                 (layout.target_1, 100, "B31"),
                 (layout.target_2, 200, "B32"),
             ],
+            tag="blue",
         )
         brown = await self.transfer_pass(
             layout.source_brown,
@@ -756,6 +939,9 @@ class PipetteLiquidHandler:
                 (layout.target_1, 200, "B31"),
                 (layout.target_2, 100, "B32"),
             ],
+            tag="brown",
+            # Final pass: discard the tip and stop — no fresh tip after.
+            reload_after=False,
         )
 
         await self.end()
@@ -785,13 +971,15 @@ async def _demo() -> None:
     """
     logging.basicConfig(level=logging.INFO)
     async with PipetteLiquidHandler(layout) as cell:
-        print("balance model:", await cell.get_balance_model())
+        # The balance is touched only during dispense weighing; no
+        # startup query here.
         results = await cell.run()
         for liquid, dispenses in results.items():
             for item in dispenses:
                 print(
                     f"{liquid} {item.label}: {item.volume_ul} uL -> "
-                    f"{item.reading.value:.4f} {item.reading.unit}"
+                    f"median {item.reading.value:.4f} {item.reading.unit} "
+                    f"(n={len(item.samples)})"
                 )
 
 

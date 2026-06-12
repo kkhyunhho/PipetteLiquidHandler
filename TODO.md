@@ -41,6 +41,47 @@ off (`- [x]`) as they complete. Style follows the sibling projects'
       of `pipette_liquid_handler.py` for the user to fill in.
 
 ### Awaiting user
-- [ ] Measure and enter the real coordinates (T.B./T.S./B1/B2/B31/B32,
-      `travel_z_mm`, `tip_interval_mm`, `tip_seat_z_mm`) in the OPERATOR
-      CONFIGURATION block, then re-run on hardware.
+- [x] User entered measured coordinates in the OPERATOR CONFIGURATION
+      block.
+- [ ] Re-run the full workflow on hardware with the real coordinates.
+
+## 2026-06-12 | Refinement round 2
+
+- [x] Slow tip seating: only the tip-insertion Z moves (descent onto the
+      tip + the seat press) run at `tip_seat_speed_pct = 3`; the X
+      traverse stays at normal speed. Added a `speed_pct` override to
+      `move_z` / `move_x`.
+- [x] Reinterpret `tip_seat_z_mm` as an **extra press past the approach
+      depth** (seat target = `tip_storage.z` + `tip_seat_z_mm`), matching
+      the entered values (approach 255, press +10).
+- [x] dry-run updated to record per-move speed and assert the 6 slow Z
+      moves (3% during seating, no slow X); ALL PASS.
+- [x] `requirements-dev.txt` for ruff (runtime deps unchanged).
+- [x] Reverted: removed `requirements-dev.txt` — the sibling projects do
+      not pin ruff; it stays an ad-hoc dev tool (`ruff.toml` + CLAUDE.md
+      cover usage).
+- [x] `claude_test/run_z_minus20.py` — full run with every Z shifted by
+      -20 mm (floored at 0), derived from the real layout.
+
+## 2026-06-12 | Refinement round 3
+
+- [x] Median weighing: each target weight is the median of
+      `weigh_sample_count = 5` stable reads (raw `read_stable_weight`,
+      not the jitter-dedup stream, which would drop the repeats);
+      `flush_pending_reads()` first drops stale pre-dispense lines.
+      `measure_weight()` returns the median + the raw samples.
+- [x] CSV weigh log: `_log_weigh` appends each sample and the final
+      median per measurement (timestamp, tag, target, volume_ul, kind,
+      index, value, unit). `csv_path` ctor arg, else a timestamped
+      `weigh_<...>.csv`. `DispenseResult` now carries `samples`.
+- [x] dry-run updated (flush + 5 reads + median + CSV asserts); ALL PASS.
+
+## 2026-06-12 | Refinement round 4
+
+- [x] Step narration: each workflow stage logs at INFO (setup, per-pass
+      aspirate, per-target move+dispense, blow-out, weigh, tip discard,
+      tip load) so the terminal shows what the cell is doing.
+- [x] Balance touched only at dispense: removed the startup
+      `get_balance_model()` query from `_demo` and `run_z_minus20.py`
+      (connection is still validated by opening the port in `connect`).
+      Weighing already occurred only in `dispense_and_weigh`.
