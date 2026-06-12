@@ -126,13 +126,15 @@ travel_z_mm = 0  # safe clearance height for X traversal
 
 trash_bin_mm = (0, 175)  # T.B. — used-tip drop
 tip_storage_mm = (55, 255)  # T.S. — first tip (slot 0) approach
-source_blue_mm = (180, 65)  # B1 — blue liquid
-source_brown_mm = (325, 65)  # B2 — brown liquid
-target_1_mm = (235, 30)  # B31 — first target (on the balance pan)
-target_2_mm = (275, 30)  # B32 — second target (on the balance pan)
+source_blue_mm = (180, 70)  # B1 — blue liquid
+source_brown_mm = (325, 70)  # B2 — brown liquid
+target_1_mm = (235, 50)  # B31 — first target (on the balance pan)
+target_2_mm = (275, 50)  # B32 — second target (on the balance pan)
 
 tip_interval_mm = 9.5  # X spacing between adjacent tips in the rack
 tip_seat_z_mm = 10  # extra Z press past the approach depth to seat a tip
+tip_count = 8  # tips available in the rack (a run consumes 2)
+tip_start_index = 6  # 0-based first tip slot (0 = leftmost; 2 = 3rd tip)
 
 # Stage / pipette motion knobs (rarely edited).
 x_axis_serial = "NTAM63XD"  # FTDI chip serial of the X-axis adapter
@@ -141,6 +143,19 @@ move_accel_pct = 10  # accel ramp on every move (0 = abrupt), % of max
 tip_seat_speed_pct = 3  # slow Z speed while seating a tip, % of max RPM
 pipette_speed = 6  # default pipette motor speed, 1..9
 weigh_sample_count = 5  # stable reads per weighing; final value = median
+
+# Dispense volumes (uL) per pass and target. The balance is tared before
+# each dispense, so the weighing reports the net mass added to that vial.
+# The pipette handles min_volume_ul..max_volume_ul per operation, and
+# each pass aspirates the sum of its two volumes (so each pass total must
+# also stay within max_volume_ul).
+min_volume_ul = 50  # pipette per-operation minimum (do not lower)
+max_volume_ul = 1000  # pipette per-operation maximum (do not raise)
+blue_b31_ul = 350  # blue liquid -> B31
+blue_b32_ul = 550  # blue liquid -> B32
+brown_b31_ul = 550  # brown liquid -> B31
+brown_b32_ul = 350  # brown liquid -> B32
+
 home_dir_z = 0x00  # Z homing direction byte
 home_dir_x = 0x01  # X homing direction byte
 # ══════════════════════════════════════════════════════════════════════
@@ -267,6 +282,8 @@ class PipetteLiquidHandler:
         tip_seat_speed_pct: int = tip_seat_speed_pct,
         pipette_speed: int = pipette_speed,
         weigh_sample_count: int = weigh_sample_count,
+        tip_count: int = tip_count,
+        tip_start_index: int = tip_start_index,
         csv_path: str | None = None,
     ) -> None:
         """Record the layout and connection settings without opening any
@@ -291,6 +308,11 @@ class PipetteLiquidHandler:
             pipette_speed: Default pipette motor speed (1..9).
             weigh_sample_count: Stable reads collected per weighing; the
                 reported value is their median.
+            tip_count: Tips available in the rack; reloading beyond the
+                last slot raises.
+            tip_start_index: 0-based slot of the first tip to use, so a
+                run can skip already-consumed tips (e.g. 2 starts at the
+                third tip).
             csv_path: Where to write the weigh log, or None to create a
                 timestamped ``weigh_<...>.csv`` on the first weighing.
         """
@@ -318,9 +340,17 @@ class PipetteLiquidHandler:
         self._z_motors: list[MKSMotor] = []
         self._x_motor: MKSMotor | None = None
 
-        # Index of the next fresh tip to seat from the rack. Advanced by
-        # reload_tip so each reload takes the next slot along X.
-        self._tip_index = 0
+        # Tip rack bookkeeping. ``_tip_index`` is the next slot to seat,
+        # advanced by reload_tip; it starts at ``tip_start_index`` so a
+        # run can skip already-consumed tips, and may not reach
+        # ``tip_count``.
+        self._tip_count = tip_count
+        self._tip_start_index = tip_start_index
+        self._tip_index = tip_start_index
+
+        # Running net mass delivered per target vial (label -> grams),
+        # accumulated across passes since each dispense is tared.
+        self._vial_totals: dict[str, float] = {}
 
         # Serializes blocking motor calls. The MKS adapters are not safe
         # to drive from two coroutines at once, and to_thread runs on a
@@ -669,6 +699,7 @@ class PipetteLiquidHandler:
                 "index",
                 "value",
                 "unit",
+                "vial_total",
             ]
         )
         logger.info("weigh log: %s", path)
@@ -680,8 +711,14 @@ class PipetteLiquidHandler:
         volume_ul: int,
         samples: list[WeightReading],
         final: WeightReading,
+        vial_total: float,
     ) -> None:
-        """Append one measurement's samples and median to the CSV."""
+        """Append a measurement's samples, net median, and vial total.
+
+        ``final`` is the net mass of this dispense (the balance was
+        tared first); ``vial_total`` is the running sum delivered to this
+        vial across passes.
+        """
         self._ensure_csv()
         stamp = datetime.now().isoformat(timespec="seconds")
         for index, sample in enumerate(samples):
@@ -695,6 +732,7 @@ class PipetteLiquidHandler:
                     index,
                     f"{sample.value:.4f}",
                     sample.unit,
+                    "",
                 ]
             )
         self._csv_writer.writerow(
@@ -707,9 +745,19 @@ class PipetteLiquidHandler:
                 "",
                 f"{final.value:.4f}",
                 final.unit,
+                f"{vial_total:.4f}",
             ]
         )
         self._csv_file.flush()
+
+    async def tare_balance(self) -> None:
+        """Zero the balance so the next reading is the net mass added.
+
+        Tared with the tip clear (at the travel height) before a
+        dispense, so the post-dispense weighing reports only the mass
+        delivered to that vial — independent of anything else on the pan.
+        """
+        await asyncio.to_thread(self._require_scale().tare)
 
     async def calibrate_balance(self) -> WeightReading:
         """Run the balance internal calibration (pan must be empty)."""
@@ -741,6 +789,11 @@ class PipetteLiquidHandler:
         tip attached and advances the tip index.
         """
         slot = self._tip_index
+        if slot >= self._tip_count:
+            raise RuntimeError(
+                f"tip rack exhausted: slot {slot} >= tip_count "
+                f"{self._tip_count}"
+            )
         logger.info("[tip] load new tip #%d (slow seat press)", slot)
         tip = Point(
             x_mm=self._layout.tip_storage.x_mm
@@ -799,12 +852,13 @@ class PipetteLiquidHandler:
         tag: str = "",
         blow_out: bool = False,
     ) -> DispenseResult:
-        """Traverse to a target, dispense, retract, then weigh.
+        """Tare, dispense into a target, retract, then weigh the net.
 
-        The weight is taken **after** the tip retracts clear of the vial
-        (so contact cannot corrupt the reading) as the median of
-        ``weigh_sample_count`` stable reads; the samples and the median
-        are appended to the weigh-log CSV.
+        The balance is tared (tip clear) **before** the dispense, so the
+        weighing — taken after the tip retracts clear, as the median of
+        ``weigh_sample_count`` stable reads — is the net mass delivered to
+        this vial. The samples, the net median, and the running per-vial
+        total are appended to the weigh-log CSV.
 
         Args:
             target: Target vial position (on the P.S. pan).
@@ -818,12 +872,18 @@ class PipetteLiquidHandler:
                 liquid still owed to later targets.
 
         Returns:
-            The dispense volume paired with the median reading and its
-            samples.
+            The dispense volume paired with the net median reading and
+            its samples.
         """
         logger.info(
-            "[%s] %s: move over target, dispense %d uL", tag, label, volume_ul
+            "[%s] %s: tare -> dispense %d uL -> weigh net",
+            tag,
+            label,
+            volume_ul,
         )
+        # Zero the balance with the tip clear so the post-dispense
+        # reading is only the mass added to this vial.
+        await self.tare_balance()
         await self.traverse_to(target)
         await self.dispense(volume_ul)
         if blow_out:
@@ -832,22 +892,18 @@ class PipetteLiquidHandler:
             logger.info("[%s] %s: blow out residual", tag, label)
             await self.blow_out()
         await self.retract()
-        logger.info(
-            "[%s] %s: tip clear, weighing (median of %d)",
-            tag,
-            label,
-            self._weigh_sample_count,
-        )
         final, samples = await self.measure_weight()
-        self._log_weigh(tag, label, volume_ul, samples, final)
+        total = self._vial_totals.get(label, 0.0) + final.value
+        self._vial_totals[label] = total
+        self._log_weigh(tag, label, volume_ul, samples, final, total)
         logger.info(
-            "%s/%s: dispensed %d uL, median %.4f %s (n=%d)",
+            "%s/%s: +%.4f %s net (vial total %.4f %s)",
             tag,
             label,
-            volume_ul,
             final.value,
             final.unit,
-            len(samples),
+            total,
+            final.unit,
         )
         return DispenseResult(label, volume_ul, final, samples)
 
@@ -878,6 +934,11 @@ class PipetteLiquidHandler:
         """
         logger.info("=== pass: %s ===", tag or "(untagged)")
         total_ul = sum(volume for _, volume, _ in plan)
+        if total_ul > max_volume_ul:
+            raise ValueError(
+                f"{tag} pass aspirates {total_ul} uL, over the "
+                f"{max_volume_ul} uL pipette maximum"
+            )
         logger.info("[%s] aspirate %d uL from source", tag, total_ul)
         await self.traverse_to(source)
         await self.aspirate(total_ul)
@@ -911,33 +972,64 @@ class PipetteLiquidHandler:
     async def run(self) -> dict[str, list[DispenseResult]]:
         """Execute the full ``workflow.md`` procedure end to end.
 
-        Setting, then the blue pass (B1 -> 100 uL into B31, 200 uL into
-        B32), then the brown pass (B2 -> 200 uL into B31, 100 uL into
-        B32), then Ending. Each pass aspirates 300 uL once, weighs after
-        every dispense (tip retracted), and blows out residual on the
-        final dispense before its weighing. The blue pass swaps in a
-        fresh tip at its end; the brown (final) pass just discards its
-        tip — no reload.
+        Setting, then the blue pass (B1 -> ``blue_b31_ul`` into B31,
+        ``blue_b32_ul`` into B32), then the brown pass (B2 ->
+        ``brown_b31_ul`` into B31, ``brown_b32_ul`` into B32), then
+        Ending. The four volumes come from the OPERATOR CONFIGURATION
+        block. Each pass aspirates its two volumes' sum once; every
+        dispense tares first and weighs the net (tip retracted), blowing
+        out residual on the final dispense. The blue pass swaps in a
+        fresh tip; the brown (final) pass discards its tip without
+        reloading. A per-vial total is logged at the end.
 
         Returns:
             ``{"blue": [...], "brown": [...]}`` dispense/weigh results.
+
+        Raises:
+            ValueError: If a configured volume is outside
+                ``[min_volume_ul, max_volume_ul]``, a pass total exceeds
+                the pipette maximum, or the run's two tips do not fit in
+                the rack from ``tip_start_index``.
         """
+        for volume, ctx in (
+            (blue_b31_ul, "blue->B31"),
+            (blue_b32_ul, "blue->B32"),
+            (brown_b31_ul, "brown->B31"),
+            (brown_b32_ul, "brown->B32"),
+        ):
+            if not min_volume_ul <= volume <= max_volume_ul:
+                raise ValueError(
+                    f"{ctx} volume {volume} uL out of range "
+                    f"[{min_volume_ul}, {max_volume_ul}]"
+                )
+
+        # A run seats two tips: one in setup, one for the second pass.
+        tips_needed = 2
+        if self._tip_start_index + tips_needed > self._tip_count:
+            raise ValueError(
+                f"not enough tips: a run needs {tips_needed} from slot "
+                f"{self._tip_start_index}, but the rack has only "
+                f"{self._tip_count}"
+            )
+
         layout = self._layout
+        self._tip_index = self._tip_start_index
+        self._vial_totals = {}
         await self.setup()
 
         blue = await self.transfer_pass(
             layout.source_blue,
             [
-                (layout.target_1, 100, "B31"),
-                (layout.target_2, 200, "B32"),
+                (layout.target_1, blue_b31_ul, "B31"),
+                (layout.target_2, blue_b32_ul, "B32"),
             ],
             tag="blue",
         )
         brown = await self.transfer_pass(
             layout.source_brown,
             [
-                (layout.target_1, 200, "B31"),
-                (layout.target_2, 100, "B32"),
+                (layout.target_1, brown_b31_ul, "B31"),
+                (layout.target_2, brown_b32_ul, "B32"),
             ],
             tag="brown",
             # Final pass: discard the tip and stop — no fresh tip after.
@@ -945,6 +1037,8 @@ class PipetteLiquidHandler:
         )
 
         await self.end()
+        for vial, total in self._vial_totals.items():
+            logger.info("vial %s total delivered: %.4f g", vial, total)
         return {"blue": blue, "brown": brown}
 
 

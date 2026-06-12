@@ -73,16 +73,25 @@ Edit the **OPERATOR CONFIGURATION** block at the top of
 - `travel_z_mm` — safe clearance height for X traversal (Z raised).
 - `tip_interval_mm` — X spacing between tips; `tip_seat_z_mm` — extra Z
   press past the approach to seat a tip.
-- `x_axis_serial`, `move_speed_pct`, `tip_seat_speed_pct` (slow tip
-  seating), `pipette_speed`, `weigh_sample_count`.
+- `tip_count` (rack size, default 8) and `tip_start_index` (0-based
+  first tip; set to 2 to begin at the 3rd tip after consuming two). A
+  run uses 2 tips, so an 8-tip rack does 4 runs.
+- `x_axis_serial`, `move_speed_pct`, `move_accel_pct` (smoothing ramp),
+  `tip_seat_speed_pct` (slow tip seating), `pipette_speed`,
+  `weigh_sample_count`.
+- Dispense volumes `blue_b31_ul` ... `brown_b32_ul` — each within the
+  pipette's `min_volume_ul`..`max_volume_ul` (50..1000 uL); each pass
+  aspirates the sum of its two volumes (also capped at the max).
 
 ## Weigh log (CSV)
 
-Each target weight is the **median of `weigh_sample_count` (5) stable
-reads** — robust against an outlier. Every sample and the final median
+The balance is **tared before each dispense** (tip clear), so each
+weighing is the **net mass delivered to that vial**, taken as the
+**median of `weigh_sample_count` (5) stable reads** — robust against an
+outlier. Every sample, the net median, and the running per-vial total
 are written to a CSV (`csv_path` constructor arg, else a timestamped
 `weigh_<...>.csv`): columns `timestamp, tag, target, volume_ul, kind,
-index, value, unit`.
+index, value, unit, vial_total`.
 
 ## Layout / debug scripts
 

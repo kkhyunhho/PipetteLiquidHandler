@@ -1,0 +1,17 @@
+attempt,timestamp,liquid,target,blow_out,nominal_ul,net_g,measured_ul,dev_ul,dev_pct,excluded
+attempt2,2026-06-12T12:15:34,blue,B31,False,100,0.0870,87.0,-13.0,-13.00,False
+attempt2,2026-06-12T12:17:31,brown,B32,True,100,0.0300,30.0,-70.0,-70.00,True
+attempt3,2026-06-12T12:34:58,blue,B31,False,250,0.2369,236.9,-13.1,-5.24,False
+attempt3,2026-06-12T12:37:00,brown,B32,True,250,0.2496,249.6,-0.4,-0.16,False
+attempt1,2026-06-12T11:46:08,blue,B31,False,300,0.2865,286.5,-13.5,-4.50,False
+attempt1,2026-06-12T11:47:56,brown,B32,True,300,0.2977,297.7,-2.3,-0.77,False
+attempt4,2026-06-12T12:43:54,blue,B31,False,350,0.3365,336.5,-13.5,-3.86,False
+attempt4,2026-06-12T12:45:47,brown,B32,True,350,0.3471,347.1,-2.9,-0.83,False
+attempt4,2026-06-12T12:44:11,blue,B32,True,550,0.5446,544.6,-5.4,-0.98,False
+attempt4,2026-06-12T12:45:31,brown,B31,False,550,0.5371,537.1,-12.9,-2.35,False
+attempt1,2026-06-12T11:46:22,blue,B32,True,600,0.5930,593.0,-7.0,-1.17,False
+attempt1,2026-06-12T11:47:42,brown,B31,False,600,0.5867,586.7,-13.3,-2.22,False
+attempt3,2026-06-12T12:35:21,blue,B32,True,650,0.6441,644.1,-5.9,-0.91,False
+attempt3,2026-06-12T12:36:43,brown,B31,False,650,0.6365,636.5,-13.5,-2.08,False
+attempt2,2026-06-12T12:15:52,blue,B32,True,800,0.7907,790.7,-9.3,-1.16,False
+attempt2,2026-06-12T12:17:14,brown,B31,False,800,0.7944,794.4,-5.6,-0.70,False

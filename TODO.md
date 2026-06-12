@@ -85,3 +85,26 @@ off (`- [x]`) as they complete. Style follows the sibling projects'
       `get_balance_model()` query from `_demo` and `run_z_minus20.py`
       (connection is still validated by opening the port in `connect`).
       Weighing already occurred only in `dispense_and_weigh`.
+
+## 2026-06-12 | Refinement round 5
+
+- [x] Tare before each dispense (`tare_balance`, tip clear) so the
+      weighing is the net mass added to that vial; per-vial running
+      total accumulated (`_vial_totals`) and logged + written to a new
+      `vial_total` CSV column; per-vial total logged at run end.
+- [x] Dispense volumes are configurable in the OPERATOR CONFIGURATION
+      block (`blue_b31_ul` ... `brown_b32_ul`); validated against the
+      pipette's `min_volume_ul`..`max_volume_ul` (50..1000) and each
+      pass total checked against the max.
+- [x] dry-run updated (tare mock + tare/dispense pairing + vial_total
+      accumulation asserts); ALL PASS.
+
+## 2026-06-12 | Refinement round 6
+
+- [x] Configurable starting tip: `tip_start_index` (0-based) in the
+      OPERATOR CONFIGURATION block lets a run skip already-consumed
+      tips (e.g. 2 = start at the 3rd tip). `tip_count = 8` bounds the
+      rack; `reload_tip` raises if a slot exceeds it and `run()`
+      validates the two tips fit from the start index. Rack holds 8
+      tips, a run consumes 2 -> 4 runs per rack.
+- [x] dry-run pins `tip_start_index=0` for determinism; ALL PASS.

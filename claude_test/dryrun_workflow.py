@@ -149,6 +149,9 @@ class FakeScale:
     def get_model_number(self):
         return "FAKE-ENTRIS-II"
 
+    def tare(self):
+        log("PS.tare()")
+
     def flush_pending_reads(self):
         log("PS.flush_pending_reads()")
 
@@ -197,6 +200,7 @@ async def main():
         pipette_port="/dev/fake-pipette",
         scale_port="/dev/fake-balance",
         csv_path=csv_path,
+        tip_start_index=0,  # deterministic regardless of config edits
     ) as cell:
         model = await cell.get_balance_model()
         log(f"PS.get_model_number() -> {model}")
@@ -232,6 +236,21 @@ async def main():
         print("PASS: every measurement retracts (tip clear) then flushes")
     else:
         print(f"FAIL: a measurement not preceded by retract ({flushes})")
+        ok = False
+
+    # 2b. Each dispense is preceded by a fresh tare since the previous
+    #     dispense (zero before dispensing).
+    tare_idx = [i for i, m in enumerate(TRACE) if m == "PS.tare()"]
+    disp_idx = [i for i, m in enumerate(TRACE)
+                if m.startswith("AP.dispense")]
+    if (len(tare_idx) == 4 and len(disp_idx) == 4 and all(
+            tare_idx[k] < disp_idx[k]
+            and (k == 0 or tare_idx[k] > disp_idx[k - 1])
+            for k in range(4))):
+        print("PASS: every dispense is preceded by a fresh tare")
+    else:
+        print(f"FAIL: tare/dispense pairing (tare={tare_idx} "
+              f"disp={disp_idx})")
         ok = False
 
     # 3. blow-out count == 2 (one per pass), each before retract+flush.
@@ -284,23 +303,29 @@ async def main():
         print("FAIL: median / sample-count mismatch")
         ok = False
 
-    # 6. CSV written: header + (5 samples + 1 final) x 4 measurements.
+    # 6. CSV: header + (5 samples + 1 final) x 4 measurements, with a
+    #    vial_total column whose per-vial finals accumulate across passes.
     import csv as _csv
     with open(csv_path) as f:
         rows = list(_csv.reader(f))
-    expected = 1 + 4 * (5 + 1)
+    header = rows[0]
     finals = [r for r in rows[1:] if r[4] == "final"]
-    if len(rows) == expected and rows[0][0] == "timestamp" and len(finals) == 4:
-        print(f"PASS: CSV has {len(rows)} rows, {len(finals)} final values")
+    expected = 1 + 4 * (5 + 1)
+    b31 = [r for r in finals if r[2] == "B31"]
+    accum_ok = len(b31) == 2 and float(b31[1][-1]) > float(b31[0][-1])
+    if (len(rows) == expected and header[0] == "timestamp"
+            and header[-1] == "vial_total"
+            and all(r[-1] for r in finals) and accum_ok):
+        print(f"PASS: CSV has {len(rows)} rows + accumulating vial_total")
     else:
-        print(f"FAIL: CSV rows={len(rows)} (expected {expected})")
+        print(f"FAIL: CSV rows={len(rows)} header[-1]={header[-1]}")
         ok = False
 
     # Info.
     for liquid, items in results.items():
         for it in items:
             print(f"INFO: {liquid} {it.label} {it.volume_ul}uL -> "
-                  f"median {it.reading.value} {it.reading.unit} "
+                  f"net {it.reading.value} {it.reading.unit} "
                   f"(n={len(it.samples)})")
 
     print("\nRESULT:", "ALL PASS" if ok else "FAILURES ABOVE")
