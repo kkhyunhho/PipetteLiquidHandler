@@ -13,6 +13,18 @@ imports the three device drivers from their sibling project trees via
 `AutomatedPipette/`, `PrecisionScaleController/`, and
 `ESP32S3BOX3MotorController/` — it locates them by relative path.
 
+## Demonstration videos
+
+The four gravimetric validation runs, each combining a blue and a brown
+dye solution into two vials in complementary volume ratios summing to
+900 µL. Click a thumbnail to watch on YouTube.
+
+| Run 1 — (300, 600) µL | Run 2 — (100, 800) µL |
+|:---:|:---:|
+| [![Run 1](https://img.youtube.com/vi/2ytvMtxCstg/0.jpg)](https://youtu.be/2ytvMtxCstg) | [![Run 2](https://img.youtube.com/vi/2bcvVxeyy5A/0.jpg)](https://youtu.be/2bcvVxeyy5A) |
+| **Run 3 — (250, 650) µL** | **Run 4 — (350, 550) µL** |
+| [![Run 3](https://img.youtube.com/vi/83AHQyNIJ6E/0.jpg)](https://youtu.be/83AHQyNIJ6E) | [![Run 4](https://img.youtube.com/vi/EAFA03EVw3M/0.jpg)](https://youtu.be/EAFA03EVw3M) |
+
 ## Requirements
 
 - **Python 3.11+** (the code uses `typing.Self`).

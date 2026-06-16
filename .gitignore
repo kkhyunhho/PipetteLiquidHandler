@@ -33,3 +33,6 @@ weigh_*.csv
 .env.local
 *.key
 *.pem
+
+# ===== Thesis (graduation project, not committed) =====
+thesis/
