@@ -1,11 +1,14 @@
 # CLAUDE.md
 
 This file guides Claude Code when working in the **PipetteLiquidHandler**
-project. It is adapted from the sibling projects' conventions
-(`AutomatedPipette`, `PrecisionScaleController`,
-`ESP32S3BOX3MotorController`) and trimmed to fit this folder: a single
-integration layer, not a full library. Where this file is silent, follow
-the sibling CLAUDE.md files.
+project. For shared conventions — code style, the `elec` env, terminology
+(**Level** = control-code depth; **Phase** = SDL hardware stage;
+composition = device → **cell** → Phase-system), and task/commit rules —
+see **CommonClaude** (`kkhyunhho/CommonClaude`), the single source of truth.
+
+This folder is a **composition cell**: it drives three instruments as one
+gravimetric liquid-handling cell. Where this file is silent, CommonClaude
+governs.
 
 ## Project
 
@@ -20,10 +23,10 @@ instruments as one gravimetric liquid-handling cell, sequenced to
 | P.S.  | Precision Scaler (Sartorius Entris-II) | `entris_ii` (PrecisionScaleController) | pyserial / SBI |
 
 The whole controller is one file,
-[`pipette_liquid_handler.py`](pipette_liquid_handler.py). It imports the
-three drivers from their sibling source trees via `sys.path` (no
-packaging step), so **this folder must stay beside the three source
-projects** — moving it breaks the imports.
+[`pipette_liquid_handler.py`](pipette_liquid_handler.py). The three drivers
+(`mks_motor`, `picus2`, `entris_ii`) are `pip install -e`'d into the shared
+`elec` env, so it imports them directly — no `sys.path` bootstrap. (The
+motor driver is the full ESP32 `mks_motor`, not the MKSServo standalone.)
 
 The pipette is the only async driver, so the facade is async; the
 blocking balance/motor calls run in worker threads via
@@ -34,12 +37,13 @@ blocking balance/motor calls run in worker threads via
 | Item | Detail |
 |------|--------|
 | Runtime | Docker container (`--privileged`), Ubuntu 24.04 |
-| Python | **3.11+** (uses `typing.Self`); validated in conda env `plh` |
+| Python | **3.12** (uses `typing.Self`); the shared conda env `elec` |
 | Run as | **root** — `prepare_usb_nodes()` / `release_ftdi_sio()` use `os.mknod` and write `/sys` |
-| Deps | [`requirements.txt`](requirements.txt): `pyserial`, `pyftdi`, `bleak` |
+| Deps | the three drivers (from `elec`) + `bleak`/`pyftdi`/`pyserial` they pull in; see [`requirements.txt`](requirements.txt) |
 
-This folder is **not yet a git repository**; there is no remote and no
-CI. Treat code as production-quality regardless.
+Drivers are installed into `elec` (`pip install -e`), so no `sys.path`
+bootstrap and no folder-position dependency. The repo has a GitHub remote
+(`kkhyunhho/PipetteLiquidHandler`).
 
 ## File layout
 
@@ -89,17 +93,15 @@ production must conform fully.
 
 ## Task management (lightweight, TODO.md-centric)
 
-There is no mandatory GitHub issue/branch/PR workflow here (unlike the
-sibling projects — this folder has no git remote). Instead:
+Lightweight, even though the repo has a GitHub remote — no mandatory
+issue/branch/PR ceremony for this cell:
 
 1. Keep [`TODO.md`](TODO.md) as a **living, append-only** log. Add a
    dated section per work round; never rewrite or delete past entries.
 2. Check items off (`- [x]`) as they complete; append a one-line result.
 3. For an ambiguous request, confirm **target / method / purpose** before
    starting.
-
-If this folder later gains a git remote, adopt the full Conventional
-Commits + GitHub Flow workflow from the sibling CLAUDE.md files.
+4. Commits use Conventional Commits and go to `main`.
 
 ## Research before coding
 

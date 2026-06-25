@@ -62,42 +62,19 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
-import os
 import statistics
-import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import NamedTuple, Self
 
-# The three instrument drivers live in sibling project trees rather than
-# an installed package, so their source roots are placed on sys.path
-# relative to this file before importing them.
-_here = os.path.dirname(os.path.abspath(__file__))
-_workspace = os.path.dirname(_here)
-for _src in (
-    os.path.join(_workspace, "AutomatedPipette", "src"),
-    os.path.join(
-        _workspace,
-        "PrecisionScaleController",
-        "PrecisionScaleController",
-        "src",
-    ),
-    os.path.join(_workspace, "ESP32S3BOX3MotorController"),
-):
-    if _src not in sys.path:
-        sys.path.insert(0, _src)
-
-# These resolve only after the sys.path setup above, so the late import
-# is deliberate (E402 is expected here).
-from entris_ii import PrecisionScaleController, WeightReading  # noqa: E402
-from mks_motor import (  # noqa: E402
-    MKSMotor,
-    prepare_usb_nodes,
-    release_ftdi_sio,
-)
-from picus2 import CommandError, Picus2Client  # noqa: E402
+# The three instrument drivers (picus2, entris_ii, mks_motor) are
+# pip install -e'd into the shared `elec` env, so they import directly —
+# no sys.path bootstrap.
+from entris_ii import PrecisionScaleController, WeightReading
+from mks_motor import MKSMotor, prepare_usb_nodes, release_ftdi_sio
+from picus2 import CommandError, Picus2Client
 
 logger = logging.getLogger(__name__)
 

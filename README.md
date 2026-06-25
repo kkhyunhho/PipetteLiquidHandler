@@ -32,18 +32,16 @@ dye solution into two vials in complementary volume ratios summing to
   which `os.mknod` device nodes and unbind `ftdi_sio` (root-only).
 - System `libusb` present (pyftdi drives the USB2CAN adapters over it).
 
-## Setup (new conda env)
+## Setup (shared conda env `elec`)
+
+The three drivers (`mks_motor`, `picus2`, `entris_ii`) are `pip install -e`'d
+into the shared conda env **`elec`** (new terminals activate it), so this
+cell imports them directly — no per-project env, no `sys.path` bootstrap.
 
 ```bash
-# 1. Create and activate a fresh env (3.11 or 3.12)
-conda create -n plh python=3.11 -y
-conda activate plh
+conda activate elec
 
-# 2. Install dependencies
-cd /workspace/PipetteLiquidHandler
-pip install -r requirements.txt
-
-# 3. Sanity-check the imports resolve (no hardware touched)
+# Sanity-check the imports resolve (no hardware touched)
 python -c "import serial, pyftdi, bleak; import pipette_liquid_handler; print('ok')"
 ```
 
