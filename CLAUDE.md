@@ -4,10 +4,10 @@ This file guides Claude Code when working in the **PipetteLiquidHandler**
 project. For shared conventions — code style, the `elec` env, terminology
 (**Level** = control-code depth; **Phase** = SDL hardware stage;
 composition = device → **cell** → Phase-system), and task/commit rules —
-see **CommonClaude** (`kkhyunhho/CommonClaude`), the single source of truth.
+see **SDLClaude** (`kkhyunhho/SDLClaude`), the single source of truth.
 
 This folder is a **composition cell**: it drives three instruments as one
-gravimetric liquid-handling cell. Where this file is silent, CommonClaude
+gravimetric liquid-handling cell. Where this file is silent, SDLClaude
 governs.
 
 ## Project
