@@ -50,6 +50,7 @@ bootstrap and no folder-position dependency. The repo has a GitHub remote
 | Path | Purpose |
 |------|---------|
 | [`pipette_liquid_handler.py`](pipette_liquid_handler.py) | The combined controller. Coordinates live in the **OPERATOR CONFIGURATION** block at the top. |
+| [`cell_types.py`](cell_types.py) | Domain value types (`Point`, `CellLayout`, `DispenseResult`), split out of the controller. |
 | [`workflow.md`](workflow.md) | The cell's operating procedure — the source of truth for the sequence. |
 | [`TODO.md`](TODO.md) | Living, append-only task log (see Task management). |
 | [`requirements.txt`](requirements.txt) | Python deps for a fresh env. |
