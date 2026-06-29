@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 This file guides Claude Code when working in the **PipetteLiquidHandler**
-project. For shared conventions — code style, the `elec` env, terminology
+project. For shared conventions — code style, the `sdl` env, terminology
 (**Level** = control-code depth; **Phase** = SDL hardware stage;
 composition = device → **cell** → Phase-system), and task/commit rules —
 see **SDLClaude** (`kkhyunhho/SDLClaude`), the single source of truth.
@@ -25,7 +25,7 @@ instruments as one gravimetric liquid-handling cell, sequenced to
 The whole controller is one file,
 [`pipette_liquid_handler.py`](pipette_liquid_handler.py). The three drivers
 (`mks_motor`, `picus2`, `entris_ii`) are `pip install -e`'d into the shared
-`elec` env, so it imports them directly — no `sys.path` bootstrap. (The
+`sdl` env, so it imports them directly — no `sys.path` bootstrap. (The
 motor driver is the full ESP32 `mks_motor`, not the MKSServo standalone.)
 
 The pipette is the only async driver, so the facade is async; the
@@ -37,11 +37,11 @@ blocking balance/motor calls run in worker threads via
 | Item | Detail |
 |------|--------|
 | Runtime | Docker container (`--privileged`), Ubuntu 24.04 |
-| Python | **3.12** (uses `typing.Self`); the shared conda env `elec` |
+| Python | **3.12** (uses `typing.Self`); the shared conda env `sdl` |
 | Run as | **root** — `prepare_usb_nodes()` / `release_ftdi_sio()` use `os.mknod` and write `/sys` |
-| Deps | the three drivers (from `elec`) + `bleak`/`pyftdi`/`pyserial` they pull in; see [`requirements.txt`](requirements.txt) |
+| Deps | the three drivers (from `sdl`) + `bleak`/`pyftdi`/`pyserial` they pull in; see [`requirements.txt`](requirements.txt) |
 
-Drivers are installed into `elec` (`pip install -e`), so no `sys.path`
+Drivers are installed into `sdl` (`pip install -e`), so no `sys.path`
 bootstrap and no folder-position dependency. The repo has a GitHub remote
 (`kkhyunhho/PipetteLiquidHandler`).
 

@@ -69,7 +69,7 @@ from types import TracebackType
 from typing import Self
 
 # The three instrument drivers (picus2, entris_ii, mks_motor) are
-# pip install -e'd into the shared `elec` env, so they import directly —
+# pip install -e'd into the shared `sdl` env, so they import directly —
 # no sys.path bootstrap.
 from entris_ii import PrecisionScaleController, WeightReading
 from mks_motor import MKSMotor, prepare_usb_nodes, release_ftdi_sio
